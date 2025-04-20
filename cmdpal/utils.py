@@ -14,6 +14,7 @@ except ImportError:
         command: str = ""
         cwd: str = "~"
         description: typing.Optional[str] = ""
+        last_run_timestamp: typing.Optional[float] = None # Keep model consistent
 
 
 def fuzzy_search_tasks(
@@ -23,7 +24,7 @@ def fuzzy_search_tasks(
     score_cutoff: int = 50 # Adjust threshold as needed
 ) -> typing.List[Task]:
     """
-    Performs fuzzy search on tasks based on name and description.
+    Performs fuzzy search on tasks based on name, description, AND command.
 
     Args:
         query: The search string entered by the user.
@@ -32,30 +33,60 @@ def fuzzy_search_tasks(
         score_cutoff: The minimum score (0-100) for a match to be included.
 
     Returns:
-        A list of Task objects matching the query.
+        A list of Task objects matching the query, ordered by relevance score.
     """
     if not query:
-        return tasks # Return all tasks if query is empty
+        # If query is empty, return tasks sorted by most recent timestamp (desc)
+        # This matches the default sort order shown in the TUI when filter is empty
+        return sorted(
+            tasks,
+            key=lambda t: t.last_run_timestamp or 0,
+            reverse=True
+        )
 
-    # Create a list of choices for fuzzy matching, combining name and description
-    # Also store a mapping back to the original Task object
-    choices_map = {
-        f"{i}: {task.name} {task.description or ''}": task
-        for i, task in enumerate(tasks)
-    }
-    choices = list(choices_map.keys())
+    # --- FIX: Create map from searchable string back to task ID ---
+    # And create list of the strings themselves to search against
+    search_map = {} # Map: "Name Desc Cmd" -> task_id
+    search_choices = [] # List: ["Name1 Desc1 Cmd1", "Name2 Desc2 Cmd2", ...]
+    for task in tasks:
+        # Combine the fields into a single string for searching
+        searchable_string = f"{task.name} {task.description or ''} {task.command}"
+        search_choices.append(searchable_string)
+        # Store mapping from this unique string back to the task ID
+        # Note: If multiple tasks somehow produce the exact same combined string,
+        # this map will only store the last one encountered. This is unlikely
+        # given the inclusion of name/command/desc and unique IDs.
+        search_map[searchable_string] = task.id
+    # --- END FIX ---
 
-    # Use rapidfuzz to find the best matches
-    # process.extract returns tuples of (choice, score, index)
+
+    # --- FIX: Search against the combined strings directly ---
+    # process.extract returns list of tuples: (matched_string, score, index_in_search_choices)
     results = process.extract(
         query,
-        choices,
+        search_choices, # Search against the actual combined strings
+        # No processor needed now, we search the strings directly
         scorer=fuzz.WRatio, # Weighted ratio often gives good results
         limit=limit,
         score_cutoff=score_cutoff
     )
+    # --- END FIX ---
 
-    # Extract the corresponding Task objects from the results
-    matched_tasks = [choices_map[result[0]] for result in results]
+    # --- FIX: Map matched strings back to Task objects via task ID ---
+    # Create a quick lookup dict for tasks by ID
+    task_lookup = {task.id: task for task in tasks}
+    matched_tasks = []
+    seen_ids = set() # Ensure we don't add duplicate tasks if search yields odd results
+    for result_tuple in results:
+        matched_string = result_tuple[0]
+        # Find the task ID associated with the matched string
+        task_id = search_map.get(matched_string)
+        if task_id and task_id not in seen_ids:
+            task = task_lookup.get(task_id)
+            if task:
+                matched_tasks.append(task)
+                seen_ids.add(task_id)
+    # --- END FIX ---
 
+    # The results from process.extract are already sorted by score (highest first)
     return matched_tasks

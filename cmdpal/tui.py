@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any # Explicitly import Optional
 
 from textual.app import App, ComposeResult, Binding # Import Binding
-from textual.containers import Container, VerticalScroll, Horizontal # Import Horizontal
+# Import Horizontal container for side-by-side layout
+from textual.containers import Container, VerticalScroll, Horizontal
 from textual.reactive import reactive
 # Import specific DataTable components and exceptions
 from textual.widgets import Header, Footer, Input, DataTable, Static
-# Import CellDoesNotExist and RowKey
+# Import CellDoesNotExist and RowKey, and event types
 from textual.widgets.data_table import CellDoesNotExist, RowKey
 from textual.message import Message # Import Message base class if creating custom messages
 from textual.coordinate import Coordinate # Import Coordinate
@@ -56,7 +57,7 @@ class CmdPalApp(App[Optional[Task]]):
         Binding("down", "cursor_down", "Cursor Down", show=False, priority=True),
     ]
 
-    # CSS_PATH = "cmdpal.css" # Optional: Define if you want external CSS
+    # CSS_PATH = "cmdpal.css" # Optional: Define CSS for sizing side-by-side panes
 
     # --- Reactive Variables ---
     tasks: reactive[list[Task]] = reactive(list) # Holds all loaded tasks
@@ -64,24 +65,26 @@ class CmdPalApp(App[Optional[Task]]):
 
     # --- App Setup ---
 
-    # --- NEW: Accept launch_cwd ---
     def __init__(self, launch_cwd: str):
         super().__init__()
         self.launch_cwd = launch_cwd # Store the directory where cmdpal was launched
         self._current_filter_query = "" # Store current filter query
-    # --- END NEW ---
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
-        # --- NEW: Recommendations Area ---
         yield Static(id="cwd-recommendations", markup=True, classes="recommendations")
-        # --- END NEW ---
         yield Input(placeholder="Filter tasks by name or description...")
-        with Container(id="table-container"): # Container helps manage layout/scrolling
-             yield DataTable(id="task-table", cursor_type="row", zebra_stripes=True) # Enable zebra stripes
-        with VerticalScroll(id="preview-container"): # Make preview scrollable
-            yield Static(id="preview-pane", expand=True, markup=True)
+
+        # Use Horizontal layout for Table and Preview
+        with Horizontal(id="main-pane"):
+            # Original table container (might adjust sizing with CSS later)
+            with Container(id="table-container"):
+                 yield DataTable(id="task-table", cursor_type="row", zebra_stripes=True)
+            # Original preview container (might adjust sizing with CSS later)
+            with VerticalScroll(id="preview-container"):
+                yield Static(id="preview-pane", expand=True, markup=True)
+
         yield Footer()
 
     def on_mount(self) -> None:
@@ -96,17 +99,16 @@ class CmdPalApp(App[Optional[Task]]):
              if not save_tasks(self.tasks):
                   self.log.warning("Failed to resave tasks file after generating IDs.")
 
-        # --- NEW: Load history and update recommendations ---
+        # Load history and update recommendations
         self.history = load_history()
         self._update_recommendations()
-        # --- END NEW ---
 
         # Configure DataTable
         table = self.query_one(DataTable)
         table.add_column("Name", key="name")
         table.add_column("Description", key="description")
         table.add_column("CWD", key="cwd")
-        # --- Initial population and sort ---
+        # Initial population and sort
         self._update_table() # Populate the table with initial data (will sort by time)
 
         # Focus the input field initially
@@ -120,9 +122,11 @@ class CmdPalApp(App[Optional[Task]]):
         self._current_filter_query = event.value
         self._update_table() # Update table content based on new filter
 
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    # --- FIX: Renamed event handler to react to cursor movement ---
+    def on_data_table_row_highlighted(self, event) -> None:
         """Called when a row is highlighted in the DataTable (e.g., by cursor move)."""
-        # The event.row_key *is* the RowKey object for the selected row
+    # --- END FIX ---
+        # The event.row_key *is* the RowKey object for the highlighted row
         if event.row_key is not None:
             try:
                 task_id = str(event.row_key.value) # Assuming row key value is the task_id
@@ -152,8 +156,7 @@ class CmdPalApp(App[Optional[Task]]):
                      # Find task in the *original* list
                      selected_task = next((t for t in self.tasks if t.id == task_id), None)
                      if selected_task:
-                        # --- Timestamp update is now handled by run_task ---
-                        # update_last_run_timestamp(selected_task.id) # REMOVED FROM HERE
+                        # Timestamp update is now handled by run_task
                         self.exit(result=selected_task) # Exit app, returning the selected task
             except CellDoesNotExist:
                 # This might happen if the cursor is somehow on an invalid cell briefly
@@ -280,7 +283,6 @@ class CmdPalApp(App[Optional[Task]]):
 
         self._update_preview_pane(task_at_cursor)
 
-    # --- NEW: Update Recommendations Widget ---
     def _update_recommendations(self) -> None:
         """Updates the recommendations widget based on history for the current CWD."""
         try:
@@ -306,6 +308,7 @@ class CmdPalApp(App[Optional[Task]]):
 
             if not recent_task_ids_in_cwd:
                 reco_widget.update("[dim]No recent tasks recorded in this directory.[/dim]")
+                reco_widget.display = False # Hide if no recommendations
                 return
 
             # Look up task names (create a quick lookup dict for efficiency)
@@ -318,13 +321,16 @@ class CmdPalApp(App[Optional[Task]]):
             # Format the recommendations string
             reco_parts = [f"[dim]{i+1}.[/dim] {name}" for i, name in enumerate(reco_names)]
             reco_text = "[b]Recent here:[/b] " + "  ".join(reco_parts)
+            reco_widget.display = True # Ensure widget is visible
             reco_widget.update(reco_text)
 
         except Exception as e:
             self.log.error(f"Failed to update recommendations: {e}")
             try:
-                 # Attempt to clear the recommendations on error
-                 self.query_one("#cwd-recommendations", Static).update("")
+                 # Attempt to clear and hide the recommendations on error
+                 reco_widget = self.query_one("#cwd-recommendations", Static)
+                 reco_widget.update("")
+                 reco_widget.display = False
             except Exception:
                  pass # Ignore if query fails
     # --- END NEW ---
