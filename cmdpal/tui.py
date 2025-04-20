@@ -18,7 +18,7 @@ from textual.coordinate import Coordinate # Import Coordinate
 # Assuming Task model and storage functions are defined elsewhere
 try:
     from .models import Task
-    from .storage import load_tasks
+    from .storage import load_tasks, save_tasks # Import save_tasks
     from .utils import fuzzy_search_tasks
     from .config import DEFAULT_SCORE_CUTOFF
 except ImportError:
@@ -26,7 +26,8 @@ except ImportError:
     from dataclasses import dataclass
     @dataclass
     class Task: id: str = ""; name: str = ""; command: str = ""; cwd: str = "~"; description: typing.Optional[str] = ""
-    def load_tasks() -> typing.List[Task]: return [Task(id='1', name='Dummy Task', command='echo hello')]
+    def load_tasks() -> typing.Tuple[typing.List[Task], bool]: return ([Task(id='1', name='Dummy Task', command='echo hello')], False)
+    def save_tasks(t: typing.List[Task]) -> bool: return True
     def fuzzy_search_tasks(q, t, **kw) -> typing.List[Task]: return t
     DEFAULT_SCORE_CUTOFF = 50
 
@@ -41,10 +42,8 @@ class CmdPalApp(App[Optional[Task]]):
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
         Binding("escape", "quit", "Quit", show=True),
         Binding("enter", "select_task", "Run Task", show=False, priority=True),
-        # --- FIX: Add high-priority bindings for up/down arrows ---
         Binding("up", "cursor_up", "Cursor Up", show=False, priority=True),
         Binding("down", "cursor_down", "Cursor Down", show=False, priority=True),
-        # --- END FIX ---
     ]
 
     # CSS_PATH = "cmdpal.css" # Optional: Define if you want external CSS
@@ -72,8 +71,17 @@ class CmdPalApp(App[Optional[Task]]):
 
     def on_mount(self) -> None:
         """Called when the app is first mounted."""
-        self.tasks = load_tasks()
+        # Load tasks and check if resave is needed
+        loaded_tasks, needs_resave = load_tasks()
+        self.tasks = loaded_tasks
         self.filtered_tasks = self.tasks # Initially show all tasks
+
+        # If IDs were generated during load, save the file back immediately
+        if needs_resave:
+             self.log.info(f"Resaving tasks file ({TASKS_FILE}) with newly generated IDs...")
+             if not save_tasks(self.tasks):
+                  self.log.warning("Failed to resave tasks file after generating IDs.")
+                  # App continues with in-memory IDs, but file won't be updated
 
         # Configure DataTable
         table = self.query_one(DataTable)
@@ -101,11 +109,16 @@ class CmdPalApp(App[Optional[Task]]):
         """Called when a row is highlighted in the DataTable (e.g., by cursor move)."""
         # The event.row_key *is* the RowKey object for the selected row
         if event.row_key is not None:
-            task_id = str(event.row_key.value) # Assuming row key value is the task_id
-            selected_task = next((t for t in self.tasks if t.id == task_id), None)
-            self._update_preview_pane(selected_task) # Update preview using helper
+            try:
+                task_id = str(event.row_key.value) # Assuming row key value is the task_id
+                selected_task = next((t for t in self.tasks if t.id == task_id), None)
+                self._update_preview_pane(selected_task) # Update preview using helper
+            except Exception as e:
+                self.log.error(f"Error finding task for preview: {e}")
+                self._update_preview_pane(None)
         else:
              self._update_preview_pane(None) # Clear preview if no row selected
+
 
     # --- Actions ---
 
@@ -133,7 +146,6 @@ class CmdPalApp(App[Optional[Task]]):
         """Called when the user presses Escape or Ctrl+C."""
         self.exit(result=None)
 
-    # --- FIX: Add Actions for Up/Down Arrow Bindings ---
     def action_cursor_up(self) -> None:
         """Move the DataTable cursor up."""
         table = self.query_one(DataTable)
@@ -149,7 +161,6 @@ class CmdPalApp(App[Optional[Task]]):
             # Increment row, clamping at max row index
             new_row = min(table.row_count - 1, table.cursor_row + 1)
             table.move_cursor(row=new_row)
-    # --- END FIX ---
 
     # --- Helper Methods ---
 

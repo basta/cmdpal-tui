@@ -3,13 +3,27 @@ import sys
 from typing import List, Optional
 
 from .models import Task
+# Import LoadResult type hint if needed, though not strictly necessary here
 from .storage import load_tasks, save_tasks, find_task_by_id, find_tasks_by_name
+
+# --- Helper to handle resave after load ---
+def _load_and_resave_if_needed() -> List[Task]:
+    """Loads tasks and resaves immediately if any IDs were generated."""
+    tasks, needs_resave = load_tasks()
+    if needs_resave:
+        print(f"Info: Resaving tasks file with newly generated IDs...")
+        if not save_tasks(tasks):
+            print(f"Warning: Failed to resave tasks file after generating IDs.", file=sys.stderr)
+            # Decide if we should exit or continue with in-memory IDs
+    return tasks
 
 # --- Command Functions ---
 
 def list_tasks_cli(args: argparse.Namespace):
     """Handles the 'list' CLI command."""
-    tasks = load_tasks()
+    # Load tasks (and resave if IDs were generated)
+    tasks = _load_and_resave_if_needed()
+
     if not tasks:
         print("No tasks defined yet.")
         return
@@ -24,19 +38,27 @@ def list_tasks_cli(args: argparse.Namespace):
 
 def add_task_cli(args: argparse.Namespace):
     """Handles the 'add' CLI command."""
-    tasks = load_tasks()
+    # Load tasks (and resave if IDs were generated)
+    tasks = _load_and_resave_if_needed()
+
     try:
         new_task = Task(
             name=args.name,
             command=args.cmd,
-            cwd=args.cwd or "./", # Use default if not provided
+            cwd=args.cwd or "~", # Use default if not provided
             description=args.desc
         )
+        # Check for duplicate name before adding (optional, but good practice)
+        existing_names = [t.name for t in tasks]
+        if new_task.name in existing_names:
+            print(f"Warning: Task with name '{new_task.name}' already exists. Adding anyway.", file=sys.stderr)
+
         tasks.append(new_task)
+        # Save *after* adding the new task
         if save_tasks(tasks):
             print(f"Task '{new_task.name}' added successfully with ID: {new_task.id}")
         else:
-            print("Failed to save tasks.", file=sys.stderr)
+            print("Failed to save new task.", file=sys.stderr)
             sys.exit(1)
     except ValueError as e:
         print(f"Error adding task: {e}", file=sys.stderr)
@@ -45,7 +67,9 @@ def add_task_cli(args: argparse.Namespace):
 
 def edit_task_cli(args: argparse.Namespace):
     """Handles the 'edit' CLI command."""
-    tasks = load_tasks()
+    # Load tasks (and resave if IDs were generated)
+    tasks = _load_and_resave_if_needed()
+
     identifier = args.identifier
     task_to_edit: Optional[Task] = None
 
@@ -71,6 +95,9 @@ def edit_task_cli(args: argparse.Namespace):
     # Update fields if provided
     updated = False
     if args.name is not None:
+        # Optional: Check if new name conflicts with another existing task's name
+        if any(t.name == args.name and t.id != task_to_edit.id for t in tasks):
+             print(f"Warning: Another task already exists with the name '{args.name}'.", file=sys.stderr)
         task_to_edit.name = args.name
         updated = True
     if args.cmd is not None:
@@ -84,6 +111,7 @@ def edit_task_cli(args: argparse.Namespace):
         updated = True
 
     if updated:
+        # Save *after* editing the task
         if save_tasks(tasks):
             print(f"Task '{identifier}' updated successfully.")
         else:
@@ -95,7 +123,9 @@ def edit_task_cli(args: argparse.Namespace):
 
 def delete_task_cli(args: argparse.Namespace):
     """Handles the 'delete' CLI command."""
-    tasks = load_tasks()
+    # Load tasks (and resave if IDs were generated)
+    tasks = _load_and_resave_if_needed()
+
     identifier = args.identifier
     task_to_delete: Optional[Task] = None
     task_index: Optional[int] = None
@@ -139,6 +169,7 @@ def delete_task_cli(args: argparse.Namespace):
     # Delete the task
     del tasks[task_index]
 
+    # Save *after* deleting the task
     if save_tasks(tasks):
         print(f"Task '{identifier}' deleted successfully.")
     else:
