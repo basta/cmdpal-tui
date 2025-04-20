@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cmdpal"
+version = "0.1.0"
+description = "A TUI application for managing and running shell commands."
+authors = [
+    { name = "Ondřej Baštař", email = "your_email@example.com" }, # Replace with actual email if desired
+]
+license = { text = "MIT" } # Or choose another license like Apache-2.0
+readme = "README.md"
+requires-python = ">=3.8" # As per design document
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License", # Adjust if you change the license
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+# Define core dependencies needed to run the application
+dependencies = [
+    "textual>=0.60.0",  # Use a recent version of Textual
+    "rapidfuzz>=3.0.0",
+    # "typer[all]>=0.9.0", # Uncomment if you prefer Typer over argparse for CLI
+]
+
+# Optional dependencies for development (e.g., testing, linting)
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.1.0",
+    # Add other dev tools here
+]
+
+# Define the command-line script entry point
+# This allows running 'cmdpal' directly after installation
+[project.scripts]
+cmdpal = "cmdpal.__main__:main" # Assumes a main() function in cmdpal/__main__.py
+
+[project.urls]
+Homepage = "https://github.com/your_username/cmdpal-tui"   # Replace with your repo URL
+Repository = "https://github.com/your_username/cmdpal-tui" # Replace with your repo URL
+
+# Configuration for Ruff linter/formatter (Optional but recommended)
+[tool.ruff]
+line-length = 88
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "PL",
+    "PTH",
+] # Example selection, customize as needed
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
