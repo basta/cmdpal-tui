@@ -5,12 +5,17 @@ import time # Import time for timestamping
 import typing
 import uuid # Import uuid
 from dataclasses import asdict
+from typing import List, Dict, Any # Use specific types
 
-from .config import TASKS_FILE, APP_DIR
+# Import config variables
+from .config import TASKS_FILE, HISTORY_FILE, HISTORY_MAX_SIZE, APP_DIR
 from .models import Task
 
 # Define return type for load_tasks
 LoadResult = typing.Tuple[typing.List[Task], bool]
+HistoryEntry = Dict[str, Any] # Type alias for history entries
+
+# --- Task Loading/Saving ---
 
 def load_tasks() -> LoadResult:
     """
@@ -59,7 +64,7 @@ def load_tasks() -> LoadResult:
                     new_id = str(uuid.uuid4())
                     task_data['id'] = new_id # Add the new ID to the dictionary
                     needs_resave = True # Mark that we need to save back
-                    print(f"Info: Generated new ID '{new_id}' for task '{task_name_for_log}'")
+                    # Don't print info here, let caller handle confirmation if needed
                     try:
                         # Create Task object using the updated dict (with new ID)
                         task = Task(**task_data)
@@ -106,9 +111,8 @@ def save_tasks(tasks: typing.List[Task]) -> bool:
         print(f"Unexpected error saving tasks file {TASKS_FILE}: {e}", file=sys.stderr)
         return False
 
-# --- NEW: Function to update timestamp ---
 def update_last_run_timestamp(task_id_to_update: str) -> bool:
-    """Updates the last_run_timestamp for a specific task and saves the file."""
+    """Updates the last_run_timestamp for a specific task and saves the tasks file."""
     tasks, _ = load_tasks() # Load current tasks (ignore needs_resave flag here)
     task_found = False
     for task in tasks:
@@ -120,15 +124,14 @@ def update_last_run_timestamp(task_id_to_update: str) -> bool:
     if task_found:
         # Save the entire list back with the updated timestamp
         if save_tasks(tasks):
-            # print(f"Info: Updated last run time for task ID {task_id_to_update}") # Optional log
             return True
         else:
             print(f"Error: Failed to save updated timestamp for task ID {task_id_to_update}", file=sys.stderr)
             return False
     else:
-        print(f"Warning: Could not find task with ID {task_id_to_update} to update timestamp.", file=sys.stderr)
+        # Don't print warning if task not found, might happen if task was deleted
+        # print(f"Warning: Could not find task with ID {task_id_to_update} to update timestamp.", file=sys.stderr)
         return False
-# --- END NEW ---
 
 
 def find_task_by_id(task_id: str, tasks: typing.List[Task]) -> typing.Optional[Task]:
@@ -141,3 +144,70 @@ def find_task_by_id(task_id: str, tasks: typing.List[Task]) -> typing.Optional[T
 def find_tasks_by_name(name: str, tasks: typing.List[Task]) -> typing.List[Task]:
     """Finds tasks by name (case-sensitive)."""
     return [task for task in tasks if task.name == name]
+
+
+# --- NEW: History Functions ---
+
+def load_history() -> List[HistoryEntry]:
+    """Loads the execution history from the JSON file."""
+    if not HISTORY_FILE.exists():
+        return []
+    try:
+        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            content = f.read()
+            if not content:
+                return []
+            history_data = json.loads(content)
+            if isinstance(history_data, list):
+                # Basic validation could be added here if needed
+                return history_data
+            else:
+                print(f"Warning: Invalid format in {HISTORY_FILE}. Expected a list.", file=sys.stderr)
+                return []
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Error loading history from {HISTORY_FILE}: {e}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"Unexpected error loading history file {HISTORY_FILE}: {e}", file=sys.stderr)
+        return []
+
+
+def save_history(history: List[HistoryEntry]) -> bool:
+    """Saves the execution history list to the JSON file."""
+    try:
+        APP_DIR.mkdir(parents=True, exist_ok=True)
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=2)
+        return True
+    except (IOError, TypeError) as e:
+        print(f"Error saving history to {HISTORY_FILE}: {e}", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"Unexpected error saving history file {HISTORY_FILE}: {e}", file=sys.stderr)
+        return False
+
+def add_history_entry(task_id: str, directory: str) -> None:
+    """Adds a new entry to the history file and prunes old entries."""
+    if not task_id or not directory:
+        print("Warning: Attempted to add history entry with missing task_id or directory.", file=sys.stderr)
+        return
+
+    history = load_history()
+    timestamp = time.time()
+
+    new_entry: HistoryEntry = {
+        "timestamp": timestamp,
+        "task_id": task_id,
+        "directory": directory # Store the directory where it was run
+    }
+
+    history.append(new_entry)
+
+    # Prune history if it exceeds max size
+    if len(history) > HISTORY_MAX_SIZE:
+        history = history[-HISTORY_MAX_SIZE:]
+
+    if not save_history(history):
+        print("Error: Failed to save updated history.", file=sys.stderr)
+
+# --- END NEW ---

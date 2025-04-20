@@ -1,12 +1,13 @@
 import os
 import subprocess
 import sys # Import sys for error handling in run_task
+import time # Import time
 import typing
 from pathlib import Path
-from typing import Optional # Explicitly import Optional
+from typing import Optional, List, Dict, Any # Explicitly import Optional
 
 from textual.app import App, ComposeResult, Binding # Import Binding
-from textual.containers import Container, VerticalScroll
+from textual.containers import Container, VerticalScroll, Horizontal # Import Horizontal
 from textual.reactive import reactive
 # Import specific DataTable components and exceptions
 from textual.widgets import Header, Footer, Input, DataTable, Static
@@ -14,24 +15,31 @@ from textual.widgets import Header, Footer, Input, DataTable, Static
 from textual.widgets.data_table import CellDoesNotExist, RowKey
 from textual.message import Message # Import Message base class if creating custom messages
 from textual.coordinate import Coordinate # Import Coordinate
+from textual.binding import BindingType # For more complex bindings if needed
 
 # Assuming Task model and storage functions are defined elsewhere
 try:
     from .models import Task
-    # Import save_tasks and the new update_last_run_timestamp
+    # Import save_tasks and the new history functions
     from .storage import load_tasks, save_tasks, update_last_run_timestamp
+    from .storage import load_history, add_history_entry, HistoryEntry
     from .utils import fuzzy_search_tasks
-    from .config import DEFAULT_SCORE_CUTOFF
+    from .config import DEFAULT_SCORE_CUTOFF, RECOMMENDATIONS_COUNT, TASKS_FILE # Import new config
 except ImportError:
     # Simple placeholders for standalone testing/viewing
     from dataclasses import dataclass
     @dataclass
     class Task: id: str = ""; name: str = ""; command: str = ""; cwd: str = "~"; description: typing.Optional[str] = ""; last_run_timestamp: Optional[float] = None
+    HistoryEntry = Dict[str, Any]
     def load_tasks() -> typing.Tuple[typing.List[Task], bool]: return ([Task(id='1', name='Dummy Task', command='echo hello')], False)
     def save_tasks(t: typing.List[Task]) -> bool: return True
     def update_last_run_timestamp(tid: str) -> bool: print(f"Simulating timestamp update for {tid}"); return True # Placeholder
+    def load_history() -> List[HistoryEntry]: return [{"timestamp": time.time() - 10, "task_id": "1", "directory": os.getcwd()}] # Placeholder
+    def add_history_entry(tid: str, d:str) -> None: print(f"Simulating history add for {tid} in {d}") # Placeholder
     def fuzzy_search_tasks(q, t, **kw) -> typing.List[Task]: return t
     DEFAULT_SCORE_CUTOFF = 50
+    RECOMMENDATIONS_COUNT = 3
+    TASKS_FILE = Path("~/.config/cmdpal/tasks.json").expanduser()
 
 
 class CmdPalApp(App[Optional[Task]]):
@@ -52,38 +60,46 @@ class CmdPalApp(App[Optional[Task]]):
 
     # --- Reactive Variables ---
     tasks: reactive[list[Task]] = reactive(list) # Holds all loaded tasks
-    # No longer need filtered_tasks as reactive, handle sorting/filtering in _update_table
-    # filtered_tasks: reactive[list[Task]] = reactive(list)
+    history: reactive[list[HistoryEntry]] = reactive(list) # Holds execution history
 
     # --- App Setup ---
 
-    def __init__(self):
+    # --- NEW: Accept launch_cwd ---
+    def __init__(self, launch_cwd: str):
         super().__init__()
+        self.launch_cwd = launch_cwd # Store the directory where cmdpal was launched
         self._current_filter_query = "" # Store current filter query
+    # --- END NEW ---
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
+        # --- NEW: Recommendations Area ---
+        yield Static(id="cwd-recommendations", markup=True, classes="recommendations")
+        # --- END NEW ---
         yield Input(placeholder="Filter tasks by name or description...")
         with Container(id="table-container"): # Container helps manage layout/scrolling
              yield DataTable(id="task-table", cursor_type="row", zebra_stripes=True) # Enable zebra stripes
         with VerticalScroll(id="preview-container"): # Make preview scrollable
-            # Use Markdown for richer formatting potential in preview
             yield Static(id="preview-pane", expand=True, markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
         """Called when the app is first mounted."""
-        # Load tasks and check if resave is needed
-        loaded_tasks, needs_resave = load_tasks()
+        # Load tasks and check if resave is needed for generated IDs
+        loaded_tasks, needs_task_resave = load_tasks()
         self.tasks = loaded_tasks # Assign to the reactive variable
 
         # If IDs were generated during load, save the file back immediately
-        if needs_resave:
+        if needs_task_resave:
              self.log.info(f"Resaving tasks file ({TASKS_FILE}) with newly generated IDs...")
              if not save_tasks(self.tasks):
                   self.log.warning("Failed to resave tasks file after generating IDs.")
-                  # App continues with in-memory IDs, but file won't be updated
+
+        # --- NEW: Load history and update recommendations ---
+        self.history = load_history()
+        self._update_recommendations()
+        # --- END NEW ---
 
         # Configure DataTable
         table = self.query_one(DataTable)
@@ -136,9 +152,8 @@ class CmdPalApp(App[Optional[Task]]):
                      # Find task in the *original* list
                      selected_task = next((t for t in self.tasks if t.id == task_id), None)
                      if selected_task:
-                        # --- Update timestamp before exiting ---
-                        update_last_run_timestamp(selected_task.id)
-                        # ---
+                        # --- Timestamp update is now handled by run_task ---
+                        # update_last_run_timestamp(selected_task.id) # REMOVED FROM HERE
                         self.exit(result=selected_task) # Exit app, returning the selected task
             except CellDoesNotExist:
                 # This might happen if the cursor is somehow on an invalid cell briefly
@@ -178,6 +193,7 @@ class CmdPalApp(App[Optional[Task]]):
         query = self._current_filter_query
 
         # Determine which tasks to display and sort if necessary
+        tasks_to_display: List[Task]
         if not query:
             # No filter: sort all tasks by timestamp (most recent first)
             # Treat None timestamp as 0 (oldest)
@@ -264,6 +280,55 @@ class CmdPalApp(App[Optional[Task]]):
 
         self._update_preview_pane(task_at_cursor)
 
+    # --- NEW: Update Recommendations Widget ---
+    def _update_recommendations(self) -> None:
+        """Updates the recommendations widget based on history for the current CWD."""
+        try:
+            reco_widget = self.query_one("#cwd-recommendations", Static)
+            # Filter history for entries matching the launch directory
+            cwd_history = [
+                entry for entry in self.history
+                if entry.get("directory") == self.launch_cwd
+            ]
+            # Sort by timestamp descending
+            cwd_history.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+
+            # Get top N unique task IDs from this directory's history
+            recent_task_ids_in_cwd = []
+            seen_ids = set()
+            for entry in cwd_history:
+                task_id = entry.get("task_id")
+                if task_id and task_id not in seen_ids:
+                    recent_task_ids_in_cwd.append(task_id)
+                    seen_ids.add(task_id)
+                    if len(recent_task_ids_in_cwd) >= RECOMMENDATIONS_COUNT:
+                        break
+
+            if not recent_task_ids_in_cwd:
+                reco_widget.update("[dim]No recent tasks recorded in this directory.[/dim]")
+                return
+
+            # Look up task names (create a quick lookup dict for efficiency)
+            task_lookup = {task.id: task.name for task in self.tasks}
+            reco_names = [
+                task_lookup.get(tid, f"Unknown Task ID: {tid[:8]}...")
+                for tid in recent_task_ids_in_cwd
+            ]
+
+            # Format the recommendations string
+            reco_parts = [f"[dim]{i+1}.[/dim] {name}" for i, name in enumerate(reco_names)]
+            reco_text = "[b]Recent here:[/b] " + "  ".join(reco_parts)
+            reco_widget.update(reco_text)
+
+        except Exception as e:
+            self.log.error(f"Failed to update recommendations: {e}")
+            try:
+                 # Attempt to clear the recommendations on error
+                 self.query_one("#cwd-recommendations", Static).update("")
+            except Exception:
+                 pass # Ignore if query fails
+    # --- END NEW ---
+
 
     def _update_preview_pane(self, task: Optional[Task]) -> None:
         """Updates the preview pane with the details of the given task."""
@@ -286,38 +351,38 @@ class CmdPalApp(App[Optional[Task]]):
 
 
 # --- Command Execution Function ---
-# This might live elsewhere eventually, but put here for simplicity initially
+# Needs launch_cwd to record history correctly
 
-def run_task(task: Task) -> None:
-    """Updates timestamp and executes the selected task's command."""
+def run_task(task: Task, launch_cwd: str) -> None: # Added launch_cwd parameter
+    """Updates timestamp and history, then executes the selected task's command."""
     if not task:
         print("No task selected to run.")
         return
 
-    # --- Update timestamp before running ---
-    print(f"Updating timestamp for task: {task.name} ({task.id})")
+    # --- Update timestamp AND add history entry before running ---
+    # print(f"Updating timestamp & history for task: {task.name} ({task.id}) in {launch_cwd}")
     if not update_last_run_timestamp(task.id):
         print("Warning: Failed to update run timestamp.", file=sys.stderr)
+    add_history_entry(task.id, launch_cwd) # Record execution history
     # ---
 
     command = task.command
-    cwd = os.path.expanduser(task.cwd) # Expand ~
+    # The task should run in its *defined* cwd, not necessarily the launch_cwd
+    run_cwd = os.path.expanduser(task.cwd) # Expand ~ from task definition
 
     print(f"\n--- Running Task: {task.name} ---")
-    print(f"Directory: {cwd}")
+    print(f"Directory: {run_cwd}") # Log the directory it WILL run in
     print(f"Command:   {command}")
     print("-" * (len(f"--- Running Task: {task.name} ---"))) # Match separator length
 
     try:
         # Ensure directory exists before trying to run command in it
-        if not Path(cwd).is_dir():
-             print(f"\nError: Working directory not found: {cwd}", file=sys.stderr)
+        if not Path(run_cwd).is_dir():
+             print(f"\nError: Working directory not found: {run_cwd}", file=sys.stderr)
              return
 
         # Execute the command using shell=True as per design doc v2
-        # This allows complex commands like pipelines to work easily
-        # Note security implications if commands were from untrusted sources
-        process = subprocess.run(command, shell=True, cwd=cwd, check=False) # check=False to report error manually
+        process = subprocess.run(command, shell=True, cwd=run_cwd, check=False) # Use run_cwd
 
         if process.returncode != 0:
             print(f"\nWarning: Task exited with non-zero status: {process.returncode}", file=sys.stderr)
