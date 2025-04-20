@@ -1,6 +1,7 @@
 import json
 import os
 import sys # Import sys for stderr
+import time # Import time for timestamping
 import typing
 import uuid # Import uuid
 from dataclasses import asdict
@@ -15,6 +16,7 @@ def load_tasks() -> LoadResult:
     """
     Loads tasks from the JSON storage file.
     If a task dictionary lacks a valid 'id', a new UUID is generated.
+    Handles missing 'last_run_timestamp' field gracefully.
 
     Returns:
         A tuple containing:
@@ -45,6 +47,11 @@ def load_tasks() -> LoadResult:
                     continue
 
                 task_id = task_data.get("id")
+                task_name_for_log = task_data.get('name', 'Unnamed') # For logging
+
+                # Ensure last_run_timestamp exists, default to None if missing
+                if "last_run_timestamp" not in task_data:
+                    task_data["last_run_timestamp"] = None
 
                 # Check if ID is missing or invalid (None or empty string)
                 if not task_id:
@@ -52,14 +59,13 @@ def load_tasks() -> LoadResult:
                     new_id = str(uuid.uuid4())
                     task_data['id'] = new_id # Add the new ID to the dictionary
                     needs_resave = True # Mark that we need to save back
-                    # Don't print info here, let caller handle confirmation if needed
-                    # print(f"Info: Generated new ID '{new_id}' for task '{task_data.get('name', 'Unnamed')}'")
+                    print(f"Info: Generated new ID '{new_id}' for task '{task_name_for_log}'")
                     try:
                         # Create Task object using the updated dict (with new ID)
                         task = Task(**task_data)
                         tasks_objects.append(task)
                     except (TypeError, ValueError) as task_create_err:
-                         print(f"Warning: Skipping task due to creation error after ID generation: {task_create_err} - Data: {task_data}", file=sys.stderr)
+                         print(f"Warning: Skipping task '{task_name_for_log}' due to creation error after ID generation: {task_create_err} - Data: {task_data}", file=sys.stderr)
 
                 else:
                     # ID exists and is not empty, create Task object normally
@@ -67,7 +73,7 @@ def load_tasks() -> LoadResult:
                         task = Task(**task_data)
                         tasks_objects.append(task)
                     except (TypeError, ValueError) as task_create_err:
-                         print(f"Warning: Skipping task due to creation error: {task_create_err} - Data: {task_data}", file=sys.stderr)
+                         print(f"Warning: Skipping task '{task_name_for_log}' due to creation error: {task_create_err} - Data: {task_data}", file=sys.stderr)
 
 
     except (json.JSONDecodeError, IOError, TypeError) as e:
@@ -77,8 +83,6 @@ def load_tasks() -> LoadResult:
     except Exception as e: # Catch unexpected errors during processing
         print(f"Unexpected error processing tasks file {TASKS_FILE}: {e}", file=sys.stderr)
         return ([], False)
-
-    # --- REMOVED save_tasks call from here ---
 
     # Return the list of tasks and the flag indicating if resave is needed
     return (tasks_objects, needs_resave)
@@ -101,6 +105,30 @@ def save_tasks(tasks: typing.List[Task]) -> bool:
     except Exception as e: # Catch unexpected errors during saving
         print(f"Unexpected error saving tasks file {TASKS_FILE}: {e}", file=sys.stderr)
         return False
+
+# --- NEW: Function to update timestamp ---
+def update_last_run_timestamp(task_id_to_update: str) -> bool:
+    """Updates the last_run_timestamp for a specific task and saves the file."""
+    tasks, _ = load_tasks() # Load current tasks (ignore needs_resave flag here)
+    task_found = False
+    for task in tasks:
+        if task.id == task_id_to_update:
+            task.last_run_timestamp = time.time() # Set to current Unix timestamp
+            task_found = True
+            break
+
+    if task_found:
+        # Save the entire list back with the updated timestamp
+        if save_tasks(tasks):
+            # print(f"Info: Updated last run time for task ID {task_id_to_update}") # Optional log
+            return True
+        else:
+            print(f"Error: Failed to save updated timestamp for task ID {task_id_to_update}", file=sys.stderr)
+            return False
+    else:
+        print(f"Warning: Could not find task with ID {task_id_to_update} to update timestamp.", file=sys.stderr)
+        return False
+# --- END NEW ---
 
 
 def find_task_by_id(task_id: str, tasks: typing.List[Task]) -> typing.Optional[Task]:

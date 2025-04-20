@@ -18,16 +18,18 @@ from textual.coordinate import Coordinate # Import Coordinate
 # Assuming Task model and storage functions are defined elsewhere
 try:
     from .models import Task
-    from .storage import load_tasks, save_tasks # Import save_tasks
+    # Import save_tasks and the new update_last_run_timestamp
+    from .storage import load_tasks, save_tasks, update_last_run_timestamp
     from .utils import fuzzy_search_tasks
     from .config import DEFAULT_SCORE_CUTOFF
 except ImportError:
     # Simple placeholders for standalone testing/viewing
     from dataclasses import dataclass
     @dataclass
-    class Task: id: str = ""; name: str = ""; command: str = ""; cwd: str = "~"; description: typing.Optional[str] = ""
+    class Task: id: str = ""; name: str = ""; command: str = ""; cwd: str = "~"; description: typing.Optional[str] = ""; last_run_timestamp: Optional[float] = None
     def load_tasks() -> typing.Tuple[typing.List[Task], bool]: return ([Task(id='1', name='Dummy Task', command='echo hello')], False)
     def save_tasks(t: typing.List[Task]) -> bool: return True
+    def update_last_run_timestamp(tid: str) -> bool: print(f"Simulating timestamp update for {tid}"); return True # Placeholder
     def fuzzy_search_tasks(q, t, **kw) -> typing.List[Task]: return t
     DEFAULT_SCORE_CUTOFF = 50
 
@@ -50,13 +52,14 @@ class CmdPalApp(App[Optional[Task]]):
 
     # --- Reactive Variables ---
     tasks: reactive[list[Task]] = reactive(list) # Holds all loaded tasks
-    filtered_tasks: reactive[list[Task]] = reactive(list) # Holds tasks matching filter
+    # No longer need filtered_tasks as reactive, handle sorting/filtering in _update_table
+    # filtered_tasks: reactive[list[Task]] = reactive(list)
 
     # --- App Setup ---
 
     def __init__(self):
         super().__init__()
-        # No need for _preview_content state variable anymore
+        self._current_filter_query = "" # Store current filter query
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -73,8 +76,7 @@ class CmdPalApp(App[Optional[Task]]):
         """Called when the app is first mounted."""
         # Load tasks and check if resave is needed
         loaded_tasks, needs_resave = load_tasks()
-        self.tasks = loaded_tasks
-        self.filtered_tasks = self.tasks # Initially show all tasks
+        self.tasks = loaded_tasks # Assign to the reactive variable
 
         # If IDs were generated during load, save the file back immediately
         if needs_resave:
@@ -88,7 +90,8 @@ class CmdPalApp(App[Optional[Task]]):
         table.add_column("Name", key="name")
         table.add_column("Description", key="description")
         table.add_column("CWD", key="cwd")
-        self._update_table() # Populate the table with initial data
+        # --- Initial population and sort ---
+        self._update_table() # Populate the table with initial data (will sort by time)
 
         # Focus the input field initially
         self.query_one(Input).focus()
@@ -97,12 +100,8 @@ class CmdPalApp(App[Optional[Task]]):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Called when the filter input text changes."""
-        query = event.value
-        self.filtered_tasks = fuzzy_search_tasks(
-            query,
-            self.tasks,
-            score_cutoff=DEFAULT_SCORE_CUTOFF
-        )
+        # Store the query and trigger table update
+        self._current_filter_query = event.value
         self._update_table() # Update table content based on new filter
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -111,6 +110,7 @@ class CmdPalApp(App[Optional[Task]]):
         if event.row_key is not None:
             try:
                 task_id = str(event.row_key.value) # Assuming row key value is the task_id
+                # Find task in the *original* list, not the potentially sorted/filtered one
                 selected_task = next((t for t in self.tasks if t.id == task_id), None)
                 self._update_preview_pane(selected_task) # Update preview using helper
             except Exception as e:
@@ -133,8 +133,12 @@ class CmdPalApp(App[Optional[Task]]):
                 row_key = cell_key.row_key # Extract the RowKey from the CellKey
                 if row_key is not None:
                      task_id = str(row_key.value) # Assuming row key value is the task_id
+                     # Find task in the *original* list
                      selected_task = next((t for t in self.tasks if t.id == task_id), None)
                      if selected_task:
+                        # --- Update timestamp before exiting ---
+                        update_last_run_timestamp(selected_task.id)
+                        # ---
                         self.exit(result=selected_task) # Exit app, returning the selected task
             except CellDoesNotExist:
                 # This might happen if the cursor is somehow on an invalid cell briefly
@@ -165,8 +169,31 @@ class CmdPalApp(App[Optional[Task]]):
     # --- Helper Methods ---
 
     def _update_table(self) -> None:
-        """Clears and repopulates the DataTable with filtered tasks."""
+        """
+        Clears and repopulates the DataTable.
+        Sorts by last_run_timestamp (desc) if filter is empty,
+        otherwise uses fuzzy search results.
+        """
         table = self.query_one(DataTable)
+        query = self._current_filter_query
+
+        # Determine which tasks to display and sort if necessary
+        if not query:
+            # No filter: sort all tasks by timestamp (most recent first)
+            # Treat None timestamp as 0 (oldest)
+            tasks_to_display = sorted(
+                self.tasks,
+                key=lambda t: t.last_run_timestamp or 0,
+                reverse=True
+            )
+        else:
+            # Filter is active: use fuzzy search results (order by score)
+            tasks_to_display = fuzzy_search_tasks(
+                query,
+                self.tasks,
+                score_cutoff=DEFAULT_SCORE_CUTOFF
+            )
+
         # Store the current cursor row and key to try and restore it later
         current_cursor_row = table.cursor_row if table.is_valid_row_index(table.cursor_row) else 0
         current_row_key: Optional[RowKey] = None # Use Optional typing
@@ -180,10 +207,9 @@ class CmdPalApp(App[Optional[Task]]):
 
         table.clear() # Clear existing rows
 
-        # Add rows from filtered_tasks
-        # Use task.id as the row key to uniquely identify rows
+        # Add rows from the processed list (sorted or filtered)
         new_row_keys_values = [] # Store just the values (IDs) for easy checking
-        for task in self.filtered_tasks:
+        for task in tasks_to_display:
             desc = (task.description or "")[:50] # Truncate description for table view
             if len(task.description or "") > 50:
                 desc += "..."
@@ -228,6 +254,7 @@ class CmdPalApp(App[Optional[Task]]):
                  cursor_row_key = cursor_cell_key.row_key
                  if cursor_row_key is not None:
                      task_id = str(cursor_row_key.value)
+                     # Find task in the *original* list
                      task_at_cursor = next((t for t in self.tasks if t.id == task_id), None)
              except CellDoesNotExist:
                  # Handle case where cursor might be on an invalid cell after update
@@ -262,10 +289,16 @@ class CmdPalApp(App[Optional[Task]]):
 # This might live elsewhere eventually, but put here for simplicity initially
 
 def run_task(task: Task) -> None:
-    """Executes the selected task's command."""
+    """Updates timestamp and executes the selected task's command."""
     if not task:
         print("No task selected to run.")
         return
+
+    # --- Update timestamp before running ---
+    print(f"Updating timestamp for task: {task.name} ({task.id})")
+    if not update_last_run_timestamp(task.id):
+        print("Warning: Failed to update run timestamp.", file=sys.stderr)
+    # ---
 
     command = task.command
     cwd = os.path.expanduser(task.cwd) # Expand ~

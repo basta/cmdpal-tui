@@ -1,4 +1,5 @@
 import uuid
+import time # Import time for default value if needed, though None is better
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -11,6 +12,8 @@ class Task:
     command: str = ""
     cwd: str = "~"  # Default to home directory
     description: Optional[str] = "" # Optional description
+    # --- NEW: Store last run time as Unix timestamp ---
+    last_run_timestamp: Optional[float] = None # None means never run
 
     def __post_init__(self):
         # Basic validation or normalization could go here if needed
@@ -19,4 +22,4 @@ class Task:
         if not self.command:
             raise ValueError("Task command cannot be empty.")
         if not self.cwd:
-            self.cwd = "~" # Ensure cwd is at least "~"
+            self.cwd = "./" # Ensure cwd is at least "~"
