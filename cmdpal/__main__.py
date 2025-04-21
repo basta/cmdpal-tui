@@ -1,7 +1,7 @@
 import argparse
 import sys
 import os # Import os to get CWD
-from typing import Optional
+from typing import Optional, Tuple, Dict # Import Tuple, Dict
 
 # Assuming Task model and other modules are defined
 try:
@@ -10,6 +10,8 @@ try:
     # Import run_task from tui module where it's defined now
     from .tui import CmdPalApp, run_task
     from .config import TASKS_FILE # Import the tasks file path
+    # Import storage function to save last params
+    from .storage import update_last_param_values
 except ImportError as e:
     print(f"Error importing CmdPal modules: {e}", file=sys.stderr)
     print("Ensure you are running this from the project root or have installed the package.", file=sys.stderr)
@@ -46,32 +48,43 @@ def main():
         # Execute the specified CLI command function
         args.func(args)
     else:
-        # --- Get launch CWD ---
+        # No CLI command given (and --tasks-path wasn't used), launch the TUI
         try:
             launch_cwd = os.getcwd()
         except OSError as e:
             print(f"Error getting current working directory: {e}", file=sys.stderr)
             sys.exit(1)
-        # ---
 
-        # No CLI command given (and --tasks-path wasn't used), launch the TUI
+        selected_task: Optional[Task] = None
+        param_values: Optional[Dict[str, str]] = None
+
         try:
-            # --- Pass launch_cwd to App ---
             app = CmdPalApp(launch_cwd=launch_cwd)
-            selected_task: Optional[Task] = app.run() # Run the TUI app
-            # ---
+            # --- MODIFIED: Reverted to default fullscreen run ---
+            result: Optional[Tuple[Task, Optional[Dict[str, str]]]] = app.run() # Removed inline=True
+            # --- END MODIFIED ---
 
-            # If the TUI exited with a selected task, run it
-            if selected_task:
-                # --- Pass launch_cwd to run_task ---
-                run_task(selected_task, launch_cwd) # Call the execution function
-                # ---
+            if result:
+                selected_task, param_values = result
+
+                # Update last param values *after* TUI exits
+                if param_values is not None:
+                    if not update_last_param_values(selected_task.id, param_values):
+                         # Log or print warning if saving last values failed
+                         print("Warning: Failed to save last used parameter values.", file=sys.stderr)
 
         except Exception as e:
             # Catch potential errors during TUI execution
             print(f"\nAn error occurred running the TUI: {e}", file=sys.stderr)
-            # Consider more specific error handling or logging
-            sys.exit(1)
+            sys.exit(1) # Exit if TUI crashes
+        # --- REMOVED finally block for cursor restoration (not needed for fullscreen) ---
+
+
+        # If the TUI exited with a selected task, run it
+        # This now happens *after* the TUI block and potential param saving
+        if selected_task:
+            run_task(selected_task, param_values, launch_cwd)
+
 
 if __name__ == "__main__":
     main()

@@ -4,16 +4,23 @@ import sys # Import sys for stderr
 import time # Import time for timestamping
 import typing
 import uuid # Import uuid
-from dataclasses import asdict
-from typing import List, Dict, Any # Use specific types
+from dataclasses import asdict, is_dataclass # Import is_dataclass
+from typing import List, Dict, Any, Optional # Use specific types
 
 # Import config variables
 from .config import TASKS_FILE, HISTORY_FILE, HISTORY_MAX_SIZE, APP_DIR
-from .models import Task
+from .models import Task # Task model now includes new fields
 
 # Define return type for load_tasks
 LoadResult = typing.Tuple[typing.List[Task], bool]
 HistoryEntry = Dict[str, Any] # Type alias for history entries
+
+# Custom JSON encoder to handle dataclasses if needed (though asdict usually works)
+# class DataclassEncoder(json.JSONEncoder):
+#     def default(self, o):
+#         if is_dataclass(o):
+#             return asdict(o)
+#         return super().default(o)
 
 # --- Task Loading/Saving ---
 
@@ -21,7 +28,7 @@ def load_tasks() -> LoadResult:
     """
     Loads tasks from the JSON storage file.
     If a task dictionary lacks a valid 'id', a new UUID is generated.
-    Handles missing 'last_run_timestamp' field gracefully.
+    Handles missing optional fields ('last_run_timestamp', 'parameters', 'last_param_values') gracefully.
 
     Returns:
         A tuple containing:
@@ -54,88 +61,104 @@ def load_tasks() -> LoadResult:
                 task_id = task_data.get("id")
                 task_name_for_log = task_data.get('name', 'Unnamed') # For logging
 
-                # Ensure last_run_timestamp exists, default to None if missing
-                if "last_run_timestamp" not in task_data:
-                    task_data["last_run_timestamp"] = None
+                # Ensure optional fields default to None or empty if missing in JSON
+                task_data.setdefault("last_run_timestamp", None)
+                task_data.setdefault("parameters", None) # Will default to [] in Task.__post_init__
+                task_data.setdefault("last_param_values", None) # Will default to {} in Task.__post_init__
 
                 # Check if ID is missing or invalid (None or empty string)
                 if not task_id:
-                    # ID is missing/invalid, generate a new one
                     new_id = str(uuid.uuid4())
-                    task_data['id'] = new_id # Add the new ID to the dictionary
-                    needs_resave = True # Mark that we need to save back
-                    # Don't print info here, let caller handle confirmation if needed
+                    task_data['id'] = new_id
+                    needs_resave = True
                     try:
-                        # Create Task object using the updated dict (with new ID)
                         task = Task(**task_data)
                         tasks_objects.append(task)
                     except (TypeError, ValueError) as task_create_err:
                          print(f"Warning: Skipping task '{task_name_for_log}' due to creation error after ID generation: {task_create_err} - Data: {task_data}", file=sys.stderr)
 
                 else:
-                    # ID exists and is not empty, create Task object normally
+                    # ID exists, create Task object normally
                     try:
                         task = Task(**task_data)
                         tasks_objects.append(task)
                     except (TypeError, ValueError) as task_create_err:
                          print(f"Warning: Skipping task '{task_name_for_log}' due to creation error: {task_create_err} - Data: {task_data}", file=sys.stderr)
 
-
     except (json.JSONDecodeError, IOError, TypeError) as e:
-        # Handle potential errors during file reading or data conversion
         print(f"Error loading tasks from {TASKS_FILE}: {e}", file=sys.stderr)
         return ([], False)
-    except Exception as e: # Catch unexpected errors during processing
+    except Exception as e:
         print(f"Unexpected error processing tasks file {TASKS_FILE}: {e}", file=sys.stderr)
         return ([], False)
 
-    # Return the list of tasks and the flag indicating if resave is needed
     return (tasks_objects, needs_resave)
 
 def save_tasks(tasks: typing.List[Task]) -> bool:
     """Saves the list of tasks to the JSON storage file."""
     try:
-        # Ensure the application config directory exists
         APP_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Convert list of Task objects to list of dictionaries
+        # Convert Task objects to dictionaries for JSON serialization
         tasks_data = [asdict(task) for task in tasks]
 
         with open(TASKS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(tasks_data, f, indent=2) # Use indent for readability
+            # Use default=str for potential non-serializable types, though asdict should handle Task
+            json.dump(tasks_data, f, indent=2, default=str)
         return True
     except (IOError, TypeError) as e:
         print(f"Error saving tasks to {TASKS_FILE}: {e}", file=sys.stderr)
         return False
-    except Exception as e: # Catch unexpected errors during saving
+    except Exception as e:
         print(f"Unexpected error saving tasks file {TASKS_FILE}: {e}", file=sys.stderr)
         return False
 
 def update_last_run_timestamp(task_id_to_update: str) -> bool:
     """Updates the last_run_timestamp for a specific task and saves the tasks file."""
-    tasks, _ = load_tasks() # Load current tasks (ignore needs_resave flag here)
+    tasks, _ = load_tasks() # Load current tasks
     task_found = False
     for task in tasks:
         if task.id == task_id_to_update:
-            task.last_run_timestamp = time.time() # Set to current Unix timestamp
+            task.last_run_timestamp = time.time()
+            task_found = True
+            break
+    if task_found:
+        return save_tasks(tasks) # Save the updated list
+    return False # Task not found or save failed
+
+# --- NEW: Function to update last parameter values ---
+def update_last_param_values(task_id_to_update: str, param_values: Dict[str, str]) -> bool:
+    """Updates the last_param_values for a specific task and saves the tasks file."""
+    if not param_values: # No values to save
+        return True
+
+    tasks, _ = load_tasks() # Load current tasks
+    task_found = False
+    for task in tasks:
+        if task.id == task_id_to_update:
+            # Ensure the field exists even if it was None before
+            if task.last_param_values is None:
+                task.last_param_values = {}
+            task.last_param_values.update(param_values) # Update with new values
             task_found = True
             break
 
     if task_found:
-        # Save the entire list back with the updated timestamp
         if save_tasks(tasks):
             return True
         else:
-            print(f"Error: Failed to save updated timestamp for task ID {task_id_to_update}", file=sys.stderr)
+            print(f"Error: Failed to save updated parameters for task ID {task_id_to_update}", file=sys.stderr)
             return False
     else:
-        # Don't print warning if task not found, might happen if task was deleted
-        # print(f"Warning: Could not find task with ID {task_id_to_update} to update timestamp.", file=sys.stderr)
+        # Don't warn if task not found, could have been deleted
         return False
+# --- END NEW ---
 
 
 def find_task_by_id(task_id: str, tasks: typing.List[Task]) -> typing.Optional[Task]:
     """Finds a task by its unique ID."""
+    # This might be called before load_tasks, so handle empty list
+    if not tasks:
+        return None
     for task in tasks:
         if task.id == task_id:
             return task
@@ -143,10 +166,13 @@ def find_task_by_id(task_id: str, tasks: typing.List[Task]) -> typing.Optional[T
 
 def find_tasks_by_name(name: str, tasks: typing.List[Task]) -> typing.List[Task]:
     """Finds tasks by name (case-sensitive)."""
+     # This might be called before load_tasks, so handle empty list
+    if not tasks:
+        return []
     return [task for task in tasks if task.name == name]
 
 
-# --- NEW: History Functions ---
+# --- History Functions ---
 
 def load_history() -> List[HistoryEntry]:
     """Loads the execution history from the JSON file."""
@@ -209,5 +235,3 @@ def add_history_entry(task_id: str, directory: str) -> None:
 
     if not save_history(history):
         print("Error: Failed to save updated history.", file=sys.stderr)
-
-# --- END NEW ---
