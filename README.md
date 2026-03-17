@@ -41,7 +41,7 @@ The recommended way to install CmdPal for global use is via `pipx`. This install
 2.  **Install CmdPal:**
     * Clone this repository:
         ```bash
-        git clone [https://github.com/basta/cmdpal-tui.git](https://github.com/basta/cmdpal-tui.git) # Replace with actual URL
+        git clone https://github.com/basta/cmdpal-tui.git # Replace with actual URL
         cd cmdpal-tui
         ```
     * Install using `pipx`:
