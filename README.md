@@ -8,8 +8,11 @@ Built with Python and the modern [Textual](https://textual.textualize.io/) frame
 
 ## Screenshot
 
-\[\[Screenshot of CmdPal TUI in action\]\]
-*(A brief visual overview of the main TUI interface)*
+![CmdPal TUI Main Interface](assets/textual2.png)
+*(Main TUI interface with task list and preview)*
+
+![CmdPal TUI Modal Input](assets/textual1.png)
+*(Interactive modal for command arguments)*
 
 ## Features ✨
 
