@@ -1,6 +1,6 @@
 # CmdPal 🚀
 
-**CmdPal** (Command Palette / Command Pal) is a fast, keyboard-driven TUI (Terminal User Interface) application for efficiently managing and executing your frequently used shell commands and scripts.
+**CmdPal** Command Palette is a fast, keyboard-driven TUI (Terminal User Interface) application for efficiently managing and executing your frequently used shell commands and scripts.
 
 Stop digging through history or notes! Define your tasks once – with names, commands, working directories, and descriptions – then find and run them instantly using an intuitive fuzzy search interface.
 
